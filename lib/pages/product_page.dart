@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:matrixmm/api_service.dart';
 import 'package:matrixmm/models/product.dart';
 import 'package:matrixmm/pages/base_page.dart';
+import 'package:matrixmm/provider/products_provider.dart';
 import 'package:matrixmm/widgets/widget_product_card.dart';
+import 'package:provider/provider.dart';
 
 class SortBy {
   String value;
@@ -22,7 +25,12 @@ class ProductPage extends BasePage {
 }
 
 class _ProductPageState extends BasePageState<ProductPage> {
-  APIService apiService;
+  int _page = 1;
+  ScrollController _scrollController = new ScrollController();
+
+  final _searchQuery = new TextEditingController();
+  Timer _debounce;
+
   final _sortByOptions = [
     SortBy("popularity", "Popularity", "asc"),
     SortBy("modified", "Latest", "asc"),
@@ -32,8 +40,32 @@ class _ProductPageState extends BasePageState<ProductPage> {
 
   @override
   void initState() {
-    apiService = new APIService();
+    var productList = Provider.of<ProductProvider>(context, listen: false);
+    productList.resetStreams();
+    productList.setLoadingState(LoadMoreStatus.INITIAL);
+    productList.fetchProducts(_page);
+
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels ==
+          _scrollController.position.maxScrollExtent) {
+        productList.setLoadingState(LoadMoreStatus.LOADING);
+        productList.fetchProducts(++_page);
+      }
+    });
+
+    _searchQuery.addListener(_onSearchChange);
     super.initState();
+  }
+
+  _onSearchChange() {
+    var productList = Provider.of<ProductProvider>(context, listen: false);
+
+    if (_debounce?.isActive ?? false) _debounce.cancel();
+    _debounce = Timer(const Duration(milliseconds: 500), () {
+      productList.resetStreams();
+      productList.setLoadingState(LoadMoreStatus.INITIAL);
+      productList.fetchProducts(_page, strSearch: _searchQuery.text);
+    });
   }
 
   @override
@@ -42,11 +74,13 @@ class _ProductPageState extends BasePageState<ProductPage> {
   }
 
   Widget _productsList() {
-    return new FutureBuilder(
-      future: apiService.getProducts(),
-      builder: (BuildContext context, AsyncSnapshot<List<Product>> model) {
-        if (model.hasData) {
-          return _buildList(model.data);
+    return new Consumer<ProductProvider>(
+      builder: (context, productsModel, child) {
+        if (productsModel.allProducts != null &&
+            productsModel.allProducts.length > 0 &&
+            productsModel.getLoadMoreStatus() != LoadMoreStatus.INITIAL) {
+          return _buildList(productsModel.allProducts,
+              productsModel.getLoadMoreStatus() == LoadMoreStatus.LOADING);
         }
         return Center(
           child: CircularProgressIndicator(),
@@ -55,13 +89,14 @@ class _ProductPageState extends BasePageState<ProductPage> {
     );
   }
 
-  Widget _buildList(List<Product> items) {
+  Widget _buildList(List<Product> items, bool isLoadMore) {
     return Column(
       children: [
         _productFilters(),
         Flexible(
           child: GridView.count(
             shrinkWrap: true,
+            controller: _scrollController,
             crossAxisCount: 2,
             physics: ClampingScrollPhysics(),
             scrollDirection: Axis.vertical,
@@ -71,6 +106,15 @@ class _ProductPageState extends BasePageState<ProductPage> {
               );
             }).toList(),
           ),
+        ),
+        Visibility(
+          child: Container(
+            padding: EdgeInsets.all(5),
+            height: 35.0,
+            width: 35.0,
+            child: CircularProgressIndicator(),
+          ),
+          visible: isLoadMore,
         )
       ],
     );
@@ -84,6 +128,7 @@ class _ProductPageState extends BasePageState<ProductPage> {
         children: [
           Flexible(
             child: TextField(
+              controller: _searchQuery,
               decoration: InputDecoration(
                 prefixIcon: Icon(Icons.search),
                 hintText: "Search",
@@ -104,7 +149,13 @@ class _ProductPageState extends BasePageState<ProductPage> {
               borderRadius: BorderRadius.circular(9.0),
             ),
             child: PopupMenuButton(
-              onSelected: (sortBy) {},
+              onSelected: (sortBy) {
+                var productsList =
+                    Provider.of<ProductProvider>(context, listen: false);
+                productsList.resetStreams();
+                productsList.setSortOrder(sortBy);
+                productsList.fetchProducts(_page);
+              },
               itemBuilder: (BuildContext context) {
                 return _sortByOptions.map((item) {
                   return PopupMenuItem(
